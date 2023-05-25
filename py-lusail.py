@@ -12,6 +12,9 @@ class Node:
 
     def __str__(self) -> str:
         return self.value
+    
+    def is_var(self) -> bool:
+        return self.value.startswith('?')
 
 class Edge:
     def __init__(self, subject: Node, predicate: str, object: Node):
@@ -51,8 +54,8 @@ class QueryTree:
         for triple in triples:
             sep_triple = str(triple).split()
 
-            ref_subject = None
-            ref_object = None
+            ref_subject = Node("dummy")
+            ref_object = Node("dummy")
 
             if sep_triple[0] not in nodes:
                 ref_subject = Node(sep_triple[0])
@@ -103,6 +106,13 @@ class QueryTree:
         query.replace(".\n}", ". }\n }")
         endpoint.setQuery(query)
         return endpoint.query().convert()
+    
+    def get_var(self) -> set:
+        nodes = set()
+        for node in self.nodes:
+            if node.is_var():
+                nodes.add(node)
+        return nodes
 
 def create_subquery(edge: Edge) -> QueryTree:
     return QueryTree("SELECT * \nWHERE {\n " + str(edge.subject) + " " + edge.predicate + " " + str(edge.object) + " .\n}")
@@ -113,16 +123,41 @@ def get_parent_subquery(vrtx: str, subqueries: set) -> QueryTree:
             if str(edge.object) == vrtx:
                 return subquery
             
-def can_be_added_to_subquery(subquery: QueryTree, edge: Edge, V: set, endpoint: SPARQLWrapper) -> bool:
+def can_be_added_to_subquery(subquery: QueryTree, edge: Edge, endpoint: SPARQLWrapper) -> bool:
     results_1 = subquery.get_relevant_source(endpoint)
     results_2 = create_subquery(edge).get_relevant_source(endpoint)
     return results_1 == results_2
 
-def add_to_subquery(subquery: QueryTree, edge: Edge):
-    return subquery.add_edge(edge)
+def add_to_subquery(subquery: QueryTree, edge: Edge) -> QueryTree:
+    subquery.add_edge(edge)
+    return subquery
 
-def merge_subquery(subqueries: set) -> set:
-    return subqueries
+def merge_subquery(subqueries: set, V: set, endpoint: SPARQLWrapper) -> set:
+    copy_subqueries = subqueries
+    merged_subqueries = set()
+    for subquery in subqueries:
+        for copy_subquery in copy_subqueries:
+            common_var = subquery.get_var().intersection(copy_subquery.get_var())
+            if common_var:
+                if subquery.get_relevant_source(endpoint) == copy_subquery.get_relevant_source(endpoint):
+                    if not common_var.intersection(V):
+                        merged_edges = subquery.edges.union(copy_subquery.edges)
+                        merged_subquery = "SELECT * \nWHERE {\n "
+                        for edge in merged_edges:
+                            merged_subquery += str(edge) + " .\n"
+                        merged_subquery += "}"
+                        merged_subqueries.add(merged_subquery)
+                    else:
+                        merged_subqueries.add(subquery)
+                        merged_subqueries.add(copy_subquery)
+                else:
+                    merged_subqueries.add(subquery)
+                    merged_subqueries.add(copy_subquery)
+            else:
+                merged_subqueries.add(subquery)
+                merged_subqueries.add(copy_subquery)
+
+    return merged_subqueries
 
 def estimate_cost(subqueries: set) -> int:
     return len(subqueries)
@@ -196,7 +231,7 @@ def decompose(ctx: click.Context, query, global_join_var, out_result, endpoint):
                 visited_triples.add(edge_i)
 
         if visited_triples == Q:
-            subqueries = merge_subquery(subqueries)
+            subqueries = merge_subquery(subqueries, global_join_var, sparql)
             cost = estimate_cost(subqueries)
 
             if cost < min_decomp_cost:
