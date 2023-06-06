@@ -1,0 +1,8 @@
+SELECT ?S ?P ?U ?A 
+WHERE {
+?S ub:advisor ?P . 
+?P ub:teacherOf ?C . 
+?S ub:takesCourse ?C . 
+?P ub:PhDDegreeFrom ?U . 
+?U ub:address ?A 
+}

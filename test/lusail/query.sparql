@@ -1,0 +1,7 @@
+PREFIX ub: <http://swat.cse.lehigh.edu/onto/univ-bench.owl#>
+SELECT ?S ?P ?U ?A WHERE {
+    ?S ub:advisor ?P . ?S rdf:type ub:graduateStudent .
+    ?P ub:teacherOf ?C . ?P rdf:type ub:associateProfessor .
+    ?S ub:takesCourse ?C . ?C rdf:type ub:graduateCourse .
+    ?P ub:PhDDegreeFrom ?U . ?U ub:address ?A
+}

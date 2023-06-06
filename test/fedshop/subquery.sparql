@@ -1,0 +1,24 @@
+PREFIX ub: <http://swat.cse.lehigh.edu/onto/univ-bench.owl#>
+        SELECT * WHERE {
+            {
+                SELECT * WHERE {
+                    ?S rdf:type ub:graduateStudent .
+                    FILTER NOT EXISTS { 
+                        SELECT * WHERE {
+                            ?S ub:takesCourse ?C . 
+                        } 
+                    } 
+                }
+                LIMIT 1
+            } UNION {
+                SELECT * WHERE {
+                    ?S ub:takesCourse ?C .
+                    FILTER NOT EXISTS { 
+                        SELECT * WHERE {
+                            ?S rdf:type ub:graduateStudent . 
+                        } 
+                    } 
+                }
+                LIMIT 1
+            } 
+        } 
