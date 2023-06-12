@@ -1,4 +1,5 @@
 from io import BytesIO
+from itertools import product
 from typing import List, Union
 from matplotlib import pyplot as plt
 import numpy as np
@@ -7,12 +8,11 @@ from pyparsing import ParseResults
 from rdflib import Graph, Literal, URIRef, Variable
 from rdflib.plugins.sparql.parserutils import CompValue
 from rdflib.plugins.sparql.parser import parseQuery
-from rdflib.plugins.sparql.algebra import translateAlgebra, translateQuery
 from rdflib.namespace import RDF, RDFS
 import networkx as nx
 
 from lusail.Subquery import Subquery
-from lusail.utils import exec_query_on_endpoint
+from lusail.utils import exec_query_on_endpoint, translate_query
 
 LUSAIL_CACHE = {}
 
@@ -204,37 +204,32 @@ class QueryTree:
             }} LIMIT 1
             """
                         
-            parse_tree = parseQuery(query_template)
-            parse_tree[0].extend(self._prefixes)
-            parse_tree[1]["where"]["part"].extend(self._filters)
-                    
-            query_algebra = translateQuery(parse_tree)
-            query = translateAlgebra(query_algebra)
+            query = translate_query(query_template, prefixes=self._prefixes, filters=self._filters)
                     
         relevant_sources = []
         
         # FEDSHOP
-        # with open("test/fedshop/graphs.txt", "r") as efs:
-        #     graphs = efs.read().splitlines()
+        with open("test/fedshop/graphs.txt", "r") as efs:
+            graphs = efs.read().splitlines()
         
-        #     for graph in graphs:
-        #         # params = {"default-graph-uri": graph}
-        #         # endpoint = f"http://localhost:34202/sparql/?default-graph-uri={urlencode(params)}"
-        #         # print(endpoint)
-        #         response, result = exec_query_on_endpoint(query, "http://localhost:34202/sparql/", graph)
-        #         with BytesIO(result) as buffer:
-        #             result_df = pd.read_csv(buffer)
-        #             if not result_df.empty:
-        #                 relevant_sources.append(graph)
+            for graph in graphs:
+                # params = {"default-graph-uri": graph}
+                # endpoint = f"http://localhost:34202/sparql/?default-graph-uri={urlencode(params)}"
+                # print(endpoint)
+                response, result = exec_query_on_endpoint(query, "http://localhost:34202/sparql/", graph)
+                with BytesIO(result) as buffer:
+                    result_df = pd.read_csv(buffer)
+                    if not result_df.empty:
+                        relevant_sources.append(graph)
         
         # LUSAIL
-        endpoints = [EP1, EP2]
-        for endpoint in endpoints:
-            _, result = exec_query_on_endpoint(query, endpoint, None)
-            with BytesIO(result) as buffer:
-                result_df = pd.read_csv(buffer)
-                if not result_df.empty:
-                    relevant_sources.append(endpoint)
+        # endpoints = [EP1, EP2]
+        # for endpoint in endpoints:
+        #     _, result = exec_query_on_endpoint(query, endpoint, None)
+        #     with BytesIO(result) as buffer:
+        #         result_df = pd.read_csv(buffer)
+        #         if not result_df.empty:
+        #             relevant_sources.append(endpoint)
         
         LUSAIL_CACHE[tripleOrSubquery] = relevant_sources
         return relevant_sources 
@@ -252,6 +247,37 @@ class QueryTree:
         edges = list(self._hyperGraph.in_edges(vrtx, data=True)) + list(self._hyperGraph.out_edges(vrtx, data=True))
         edges = [ (s, o, p) for (s, o, p) in edges if list(p.keys())[0] != "rdf:type" ]
         return edges
+    
+    def bind_subqueries(self, subqueries: List[Subquery]):
+        
+        # Build SERVICE template, VALUES        
+        subQ_templates = []
+        subQ_vars = []
+        subQ_relS = []
+        for subQID, subQ in enumerate(subqueries):
+            
+            subQ_vars.append(f"?sq{subQID}")
+            
+            subQ_templates.append(
+            f"""SERVICE ?sq{subQID} {{
+                { ' . '.join(subQ.get_triple_patterns())}
+            }}
+            """)
+            
+            subQ_relS.append([ URIRef(relS).n3() for relS in self.get_relevant_sources(subQ)])
+            
+        relS_values_combinations = [ f"( {' '.join(comb)} )" for comb in product(*subQ_relS) ]
+        
+        # Build final query template
+        query_template = f"""SELECT {' '.join(self._projection)} WHERE {{
+            VALUES { ' '.join(subQ_vars) } {{ {' '.join(relS_values_combinations)} }}
+            { ' . '.join(subQ_templates) }
+        }}
+        """
+        
+        query = translate_query(query_template, prefixes=self._prefixes, filters=self._filters)
+        print(query)
+        return query    
     
     def __repr__(self) -> str:
         return self._query

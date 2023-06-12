@@ -8,12 +8,11 @@ import numpy as np
 import pandas as pd
 from pyparsing import ParseResults
 from lusail.QueryTree import QueryTree
-from rdflib.plugins.sparql.parser import parseQuery
-from rdflib.plugins.sparql.algebra import translateAlgebra, translateQuery
+
 import urllib.request
 from lusail.Subquery import Subquery
 
-from lusail.utils import exec_query_on_relevant_sources, get_pair_triples, get_triple_from_edge
+from lusail.utils import exec_query_on_relevant_sources, get_pair_triples, get_triple_from_edge, translate_query
 
 proxy_support = urllib.request.ProxyHandler({})
 opener = urllib.request.build_opener(proxy_support)
@@ -27,161 +26,154 @@ def cli():
 @click.argument("queryfile", type=click.Path(exists=True, file_okay=True, dir_okay=False))
 def parse_query(queryfile) -> List[str]:
     with open(queryfile) as qfs:
-        query_tree = QueryTree(qfs.read())
+        q = qfs.read()
+        query_tree = QueryTree(q)
+        print(translate_query(q, prefixes=query_tree._prefixes, filters=query_tree._filters))
         return query_tree
     
-@cli.command()
-@click.argument("query", type=click.STRING)
-@click.pass_context
-def get_global_join_variables(ctx: click.Context, query):
-    parse_tree = QueryTree(query)
-        
-    def formulate_subj_obj_query(var, subjTriple, objTriple):
-        query_template = f"""
-        SELECT {var} WHERE {{
-            {parse_tree._type_assertions[var] + " . " if parse_tree._type_assertions.get(var) is not None else ''}
-            {subjTriple} .
-            FILTER NOT EXISTS {{ 
-                SELECT {var} WHERE {{
-                    {objTriple} .
-                }} 
-            }} . 
-        }} LIMIT 1
-        """
-        
-        ptree: ParseResults = parseQuery(query_template)        
-        ptree[0].extend(parse_tree._prefixes)
-        ptree[1]["where"]["part"].extend(parse_tree._filters)
-                            
-        query_algebra = translateQuery(ptree)
-        query = translateAlgebra(query_algebra)
-        
-        return query
-
-    def formulate_pairwise_query(var, pair):
-        first, second = pair
-        
-        query_template = f"""SELECT {var} WHERE {{
-            {{
-                SELECT {var} WHERE {{
-                    {parse_tree._type_assertions[var] + " . " if parse_tree._type_assertions.get(var) is not None else ''}
-                    {first} .
-                    FILTER NOT EXISTS {{ 
-                        SELECT * WHERE {{
-                            {second} . 
-                        }} 
-                    }} 
-                }}
-            }} UNION {{
-                SELECT {var} WHERE {{
-                    {parse_tree._type_assertions[var] + " . " if parse_tree._type_assertions.get(var) is not None else ''}
-                    {second} .
-                    FILTER NOT EXISTS {{ 
-                        SELECT * WHERE {{
-                            {first} . 
-                        }} 
-                    }} 
-                }}
-            }} 
-        }}  LIMIT 1
-        """
-        
-        ptree: ParseResults = parseQuery(query_template)        
-        ptree[0].extend(parse_tree._prefixes)
-        ptree[1]["where"]["part"].extend(parse_tree._filters)
-                                    
-        query_algebra = translateQuery(ptree)
-        query = translateAlgebra(query_algebra)
-        
-        return query
-    
-    vars = [ node for node, degree in parse_tree._hyperGraph.degree() if str(node).startswith("?") and degree > 1 ]
-    chkQueries = []
-    global_join_variables = {}
-    
-    for var in vars:
-        triples = parse_tree.get_edges(var)
-        triples = [ get_triple_from_edge(e) for e in triples ]
-        pairWiseTriples = get_pair_triples(triples)
-        joinVars = False
-
-        for pair in pairWiseTriples:
-            first, second = pair
-            
-            first_ss = parse_tree.get_relevant_sources(first)
-            second_ss = parse_tree.get_relevant_sources(second)
-                            
-            if set(first_ss) != set(second_ss):
-                if global_join_variables.get(var) is None: global_join_variables[var] = []
-                global_join_variables[var].append(pair)
-                joinVars = True
-        
-        if joinVars: continue
-
-        # Record the position of var amongst the triples. 0 = subject, 1 = object
-        var_pos = set()
-        subjTriples = []
-        objTriples = []
-        for triple in triples:
-            triple_as_list = triple.split(" ")
-            idx = triple_as_list.index(var)
-            if idx == 0: subjTriples.append(triple)
-            elif idx == 2: objTriples.append(triple)
-            else: raise RuntimeError("Join variable should never be a predicate")
-            var_pos.add(idx)
-
-        # if var is subject only or object only
-        if len(var_pos) == 1:
-            #print("Subject only/object only")
-            for pair in pairWiseTriples:
-                chkQuery = formulate_pairwise_query(var, pair)
-                chkQueries.append((chkQuery, var, pair[0], pair[1]))
-
-        # if var is subject and object
-        if len(var_pos) == 2:
-            # print("Object/subject")
-            #print(subjTriples, objTriples, list(product(subjTriples, objTriples)))
-            for subjTriple, objTriple in product(subjTriples, objTriples):
-                # print(var, objTriple, subjTriple)
-                # Reverse order in the pair so it would be object/subject join
-                chkQuery = formulate_subj_obj_query(var, objTriple, subjTriple)
-                chkQueries.append((chkQuery, var, objTriple, subjTriple))
-        
-    for chkQuery, var, first, second in chkQueries:
-        first_relevant_sources = set(parse_tree.get_relevant_sources(first))
-        second_relevant_sources = set(parse_tree.get_relevant_sources(second))
-        relSources = first_relevant_sources.intersection(second_relevant_sources)
-        
-        diff = exec_query_on_relevant_sources(chkQuery, relSources)
-        
-        if not diff.empty:
-            if global_join_variables.get(var) is None: global_join_variables[var] = []
-            global_join_variables[var].append((first, second))
-            
-    # print(list(global_join_variables.keys()))
-    return list(global_join_variables.keys())
-
 # @cli.command()
-# @click.argument("queryfile", type=click.Path(exists=True, file_okay=True, dir_okay=False))
+# @click.argument("query", type=click.STRING)
 # @click.pass_context
-# def get_join_variables(ctx: click.Context, queryfile) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
-#     parse_tree: QueryTree = ctx.invoke(parse_query, queryfile=queryfile)
-#     vars = [ node for node, degree in parse_tree.hyperGraph.degree() if degree > 1 ]
+# def get_global_join_variables(ctx: click.Context, query):
+#     parse_tree = QueryTree(query)
+        
+#     def formulate_subj_obj_query(var, subjTriple, objTriple):
+#         query_template = f"""
+#         SELECT {var} WHERE {{
+#             {parse_tree._type_assertions[var] + " . " if parse_tree._type_assertions.get(var) is not None else ''}
+#             {subjTriple} .
+#             FILTER NOT EXISTS {{ 
+#                 SELECT {var} WHERE {{
+#                     {objTriple} .
+#                 }} 
+#             }} . 
+#         }} LIMIT 1
+#         """
+                
+#         query = translate_query(query_template, prefixes=parse_tree._prefixes, filters=parse_tree._filters)
+        
+#         return query
+
+#     def formulate_pairwise_query(var, pair):
+#         first, second = pair
+        
+#         query_template = f"""SELECT {var} WHERE {{
+#             {{
+#                 SELECT {var} WHERE {{
+#                     {parse_tree._type_assertions[var] + " . " if parse_tree._type_assertions.get(var) is not None else ''}
+#                     {first} .
+#                     FILTER NOT EXISTS {{ 
+#                         SELECT * WHERE {{
+#                             {second} . 
+#                         }} 
+#                     }} 
+#                 }}
+#             }} UNION {{
+#                 SELECT {var} WHERE {{
+#                     {parse_tree._type_assertions[var] + " . " if parse_tree._type_assertions.get(var) is not None else ''}
+#                     {second} .
+#                     FILTER NOT EXISTS {{ 
+#                         SELECT * WHERE {{
+#                             {first} . 
+#                         }} 
+#                     }} 
+#                 }}
+#             }} 
+#         }}  LIMIT 1
+#         """
+        
+#         query = translate_query(query_template, prefixes=parse_tree._prefixes, filters=parse_tree._filters)
+        
+#         return query
+    
+#     vars = [ node for node, degree in parse_tree._hyperGraph.degree() if str(node).startswith("?") and degree > 1 ]
+#     chkQueries = []
 #     global_join_variables = {}
     
 #     for var in vars:
 #         triples = parse_tree.get_edges(var)
 #         triples = [ get_triple_from_edge(e) for e in triples ]
+#         pairWiseTriples = get_pair_triples(triples)
+#         joinVars = False
+
+#         for pair in pairWiseTriples:
+#             first, second = pair
+            
+#             first_ss = parse_tree.get_relevant_sources(first)
+#             second_ss = parse_tree.get_relevant_sources(second)
+                            
+#             if set(first_ss) != set(second_ss):
+#                 if global_join_variables.get(var) is None: global_join_variables[var] = []
+#                 global_join_variables[var].append(pair)
+#                 joinVars = True
+        
+#         if joinVars: continue
 
 #         # Record the position of var amongst the triples. 0 = subject, 1 = object
+#         var_pos = set()
+#         subjTriples = []
+#         objTriples = []
 #         for triple in triples:
 #             triple_as_list = triple.split(" ")
 #             idx = triple_as_list.index(var)
-#             if idx == 2 and triple_as_list[1] == "owl:sameAs":
-#                 if global_join_variables.get(var) is None: global_join_variables[var] = []
-#                 global_join_variables[var].append((triple))
+#             if idx == 0: subjTriples.append(triple)
+#             elif idx == 2: objTriples.append(triple)
+#             else: raise RuntimeError("Join variable should never be a predicate")
+#             var_pos.add(idx)
+
+#         # if var is subject only or object only
+#         if len(var_pos) == 1:
+#             #print("Subject only/object only")
+#             for pair in pairWiseTriples:
+#                 chkQuery = formulate_pairwise_query(var, pair)
+#                 chkQueries.append((chkQuery, var, pair[0], pair[1]))
+
+#         # if var is subject and object
+#         if len(var_pos) == 2:
+#             # print("Object/subject")
+#             #print(subjTriples, objTriples, list(product(subjTriples, objTriples)))
+#             for subjTriple, objTriple in product(subjTriples, objTriples):
+#                 # print(var, objTriple, subjTriple)
+#                 # Reverse order in the pair so it would be object/subject join
+#                 chkQuery = formulate_subj_obj_query(var, objTriple, subjTriple)
+#                 chkQueries.append((chkQuery, var, objTriple, subjTriple))
+        
+#     for chkQuery, var, first, second in chkQueries:
+#         first_relevant_sources = set(parse_tree.get_relevant_sources(first))
+#         second_relevant_sources = set(parse_tree.get_relevant_sources(second))
+#         relSources = first_relevant_sources.intersection(second_relevant_sources)
+        
+#         diff = exec_query_on_relevant_sources(chkQuery, relSources)
+        
+#         if not diff.empty:
+#             if global_join_variables.get(var) is None: global_join_variables[var] = []
+#             global_join_variables[var].append((first, second))
             
-#     return global_join_variables
+#     print(list(global_join_variables.keys()))
+#     return list(global_join_variables.keys())
+
+@cli.command()
+@click.argument("query", type=click.STRING)
+@click.pass_context
+def get_global_join_variables(ctx: click.Context, query):
+    parse_tree = QueryTree(query)
+    vars = [ node for node, degree in parse_tree._hyperGraph.degree() if degree > 1 ]
+    global_join_variables = {}
+    
+    for var in vars:
+        triples = parse_tree.get_edges(var)
+        triples = [ get_triple_from_edge(e) for e in triples ]
+
+        # Record the position of var amongst the triples. 0 = subject, 1 = object
+        for triple in triples:
+            triple_as_list = triple.split(" ")
+            idx = triple_as_list.index(var)
+            if idx == 2 and triple_as_list[1] == "owl:sameAs":
+                if global_join_variables.get(var) is None: global_join_variables[var] = []
+                global_join_variables[var].append((triple))
+    
+    print(list(global_join_variables.keys()))
+    return list(global_join_variables.keys())
 
 @cli.command()
 @click.argument("queryfile", type=click.Path(exists=True, file_okay=True, dir_okay=True))
@@ -268,18 +260,12 @@ def decompose_query(ctx: click.Context, queryfile):
         """
         
         def get_cardinality(triple, endpoint):
-            cardinality_query = f"""SELECT (COUNT(*) as ?card) WHERE {{
+            query_template = f"""SELECT (COUNT(*) as ?card) WHERE {{
                 { triple } .
             }}
             """
             
-            ptree = parseQuery(cardinality_query)
-            ptree[0].extend(parse_tree._prefixes)
-            ptree[1]["where"]["part"].extend(parse_tree._filters)
-                    
-            query_algebra = translateQuery(ptree)
-            query = translateAlgebra(query_algebra)
-            
+            query = translate_query(query_template, prefixes=parse_tree._prefixes, filters=parse_tree._filters)
             results = exec_query_on_relevant_sources(query, [endpoint])
              
             return results.values.item()
@@ -394,7 +380,7 @@ def decompose_query(ctx: click.Context, queryfile):
                 best_decomposition = decomposition
                 min_decomp_cost = cost        
 
-    print(best_decomposition)
+    print(parse_tree.bind_subqueries(best_decomposition))
     return (best_decomposition, min_decomp_cost)
 if __name__ == "__main__":
     cli()

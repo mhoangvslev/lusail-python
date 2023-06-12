@@ -21,10 +21,11 @@ class Subquery:
         self.__edges = [edge]
         
     @staticmethod
-    def merge(subQ1, subQ2):
-        sq = deepcopy(subQ1)
-        sq.update(subQ2.get_triple_patterns())
-        return sq
+    def merge(*subqueries):
+        sq = deepcopy(subqueries[0])
+        for subQ in subqueries[1:]:
+            sq.update(subQ.get_triple_patterns())
+        return sq      
         
     def get_parent(self):
         return self.__parent

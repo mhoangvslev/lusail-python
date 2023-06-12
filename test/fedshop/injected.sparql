@@ -4,6 +4,11 @@ PREFIX bsbm: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/>
 PREFIX owl: <http://www.w3.org/2002/07/owl#>
 
 SELECT DISTINCT ?product ?localProductLabel WHERE { 
+    ?localProduct rdf:type bsbm:Product .
+    ?localProdFeature rdf:type bsbm:ProductFeature .
+    ?localProductXYZ rdf:type bsbm:Product .
+    ?localProdFeatureXYZ rdf:type bsbm:ProductFeature .
+
     ?localProduct rdfs:label ?localProductLabel .
     
     ?localProduct bsbm:productFeature ?localProdFeature .
