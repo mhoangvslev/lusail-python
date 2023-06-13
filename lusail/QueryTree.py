@@ -1,6 +1,6 @@
 from io import BytesIO
 from itertools import product
-from typing import List, Union
+from typing import List, Set, Union
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
@@ -95,7 +95,7 @@ EP1, EP2 = load_lusail_example()
 class QueryTree:
     def __init__(self, query_txt: str):
         
-        self._hyperGraph = nx.MultiDiGraph()
+        self._hyperGraph = nx.DiGraph()
 
         self._query = query_txt
         self._prefixes = []
@@ -109,11 +109,7 @@ class QueryTree:
         # Parse query
         self._parse_tree = parseQuery(self._query)     
         self.parseTree(self._parse_tree)
-        
-        # nx.draw(self.hyperGraph, with_labels=True)
-        # plt.savefig('plotgraph.png', dpi=300, bbox_inches='tight')
-        # plt.show()
-    
+            
     def parseTree(self, node):
         if isinstance(node, ParseResults) or isinstance(node, list):
             return [ self.parseTree(item) for item in node ]
@@ -160,7 +156,7 @@ class QueryTree:
                     key = " ".join((sdata, pdata, odata))
                     self._triple_patterns[key] = triple
                     
-                    if pdata == "rdf:type":
+                    if pdata == "rdf:type" or pdata == "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>":
                         self._type_assertions[sdata] = key
                     
             elif node.name == "PathAlternative":
@@ -186,27 +182,26 @@ class QueryTree:
             print(node)
             raise RuntimeError(f"Type {type(node)} not yet supported")
     
-    def get_relevant_sources(self, tripleOrSubquery: Union[str, Subquery]) -> List[str]:
+    def get_relevant_sources(self, tripleOrSubquery: Union[str, Subquery]) -> Set[str]:
         
         if tripleOrSubquery in LUSAIL_CACHE.keys():
             return LUSAIL_CACHE[tripleOrSubquery]
-                
-        parse_tree = []
-        parse_tree.append(self._prefixes)
-        
+                        
         query = None
         
         if isinstance(tripleOrSubquery, Subquery):
-            query = tripleOrSubquery.stringify(isAskQuery=True, prefixes=self._prefixes)
+            query = tripleOrSubquery.stringify(isAskQuery=True, prefixes=self._prefixes, type_assertions=self._type_assertions)
         else:
+            s, _, o = tripleOrSubquery.split()
             query_template = f"""SELECT * WHERE {{
+                #{ ' '.join([ self._type_assertions[qvar] + ' . ' for qvar in [s, o] if qvar in self._type_assertions.keys() ]) }
                 {tripleOrSubquery} .
             }} LIMIT 1
             """
-                        
+                                    
             query = translate_query(query_template, prefixes=self._prefixes, filters=self._filters)
                     
-        relevant_sources = []
+        relevant_sources = set()
         
         # FEDSHOP
         with open("test/fedshop/graphs.txt", "r") as efs:
@@ -220,7 +215,7 @@ class QueryTree:
                 with BytesIO(result) as buffer:
                     result_df = pd.read_csv(buffer)
                     if not result_df.empty:
-                        relevant_sources.append(graph)
+                        relevant_sources.add(graph)
         
         # LUSAIL
         # endpoints = [EP1, EP2]
@@ -229,15 +224,15 @@ class QueryTree:
         #     with BytesIO(result) as buffer:
         #         result_df = pd.read_csv(buffer)
         #         if not result_df.empty:
-        #             relevant_sources.append(endpoint)
+        #             relevant_sources.add(endpoint)
         
         LUSAIL_CACHE[tripleOrSubquery] = relevant_sources
         return relevant_sources 
         
-    def get_triple_patterns(self) -> List[str]:
+    def get_triple_patterns(self) -> Set[str]:
         triples = list(self._triple_patterns.keys())
         triples = [ triple for triple in triples if triple not in self._type_assertions.values() ]
-        return triples
+        return set(triples)
     
     def get_variables(self) -> set:
         return [ node for node in list(self._hyperGraph.nodes) if str(node).startswith("?") ]
@@ -248,8 +243,8 @@ class QueryTree:
         edges = [ (s, o, p) for (s, o, p) in edges if list(p.keys())[0] != "rdf:type" ]
         return edges
     
-    def bind_subqueries(self, subqueries: List[Subquery]):
-        
+    def bind_subqueries(self, subqueries: Set[Subquery]):
+                
         # Build SERVICE template, VALUES        
         subQ_templates = []
         subQ_vars = []
@@ -260,24 +255,35 @@ class QueryTree:
             
             subQ_templates.append(
             f"""SERVICE ?sq{subQID} {{
-                { ' . '.join(subQ.get_triple_patterns())}
+                { ' '.join([e + ' . ' for e in subQ.get_triple_patterns()]) }
             }}
             """)
             
             subQ_relS.append([ URIRef(relS).n3() for relS in self.get_relevant_sources(subQ)])
-            
-        relS_values_combinations = [ f"( {' '.join(comb)} )" for comb in product(*subQ_relS) ]
+                    
+        #relS_values_combinations = [ f"( {' '.join(comb)} )" for comb in product(*subQ_relS) ]
         
         # Build final query template
         query_template = f"""SELECT {' '.join(self._projection)} WHERE {{
-            VALUES { ' '.join(subQ_vars) } {{ {' '.join(relS_values_combinations)} }}
             { ' . '.join(subQ_templates) }
         }}
         """
-        
+                
         query = translate_query(query_template, prefixes=self._prefixes, filters=self._filters)
-        print(query)
         return query    
+    
+    def draw(self, **kwargs):
+        gjvs = kwargs.get("gjv") 
+        if gjvs is None: gjvs = []
+        
+        # for gjv in gjvs:
+        #     print(list(nx.dfs_edges(self._hyperGraph, source=gjv)))
+        
+        node_color = [ "orange" if node in gjvs else "blue" for node in self._hyperGraph.nodes ]
+        pos = nx.spring_layout(self._hyperGraph)
+        nx.draw(self._hyperGraph, node_color=node_color, pos=pos, with_labels=True)
+        plt.savefig('plotgraph.png', dpi=300, bbox_inches='tight')
+        plt.show()
     
     def __repr__(self) -> str:
         return self._query

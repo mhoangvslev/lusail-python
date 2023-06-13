@@ -8,8 +8,7 @@ SELECT DISTINCT ?product ?localProductLabel WHERE {
     ?localProdFeature rdf:type bsbm:ProductFeature .
     ?localProductXYZ rdf:type bsbm:Product .
     ?localProdFeatureXYZ rdf:type bsbm:ProductFeature .
-
-    ?localProduct rdfs:label ?localProductLabel .
+    ?prodFeature rdf:type bsbm:ProductFeature .
     
     ?localProduct bsbm:productFeature ?localProdFeature .
     ?localProduct bsbm:productPropertyNumeric1 ?simProperty1 .

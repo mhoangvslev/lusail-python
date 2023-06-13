@@ -2,7 +2,7 @@ import operator
 from functools import reduce
 from io import BytesIO
 from itertools import chain, combinations
-from typing import List
+from typing import List, Set
 import numpy as np
 from rdflib import Variable
 from rdflib.plugins.sparql.parser import parseQuery
@@ -52,19 +52,15 @@ def exec_query_on_endpoint(query, endpoint, graph):
     sparql_endpoint.setReturnFormat(CSV)
     sparql_endpoint.setQuery(query)
         
-    try:
-        response = sparql_endpoint.query()
-        result = response.convert()
-    except Exception as e:
-        print(query)
-        raise e
+    response = sparql_endpoint.query()
+    result = response.convert()
     return response, result
     
     # LUSAIL
     # result = endpoint.query(query).serialize(format="csv")    
     # return None, result
 
-def exec_query_on_relevant_sources(query: str, relavant_sources: List[str]):
+def exec_query_on_relevant_sources(query: str, relavant_sources: Set[str]):
     result_df = pd.DataFrame()
     for source in relavant_sources:
         # FEDSHOP
@@ -78,6 +74,6 @@ def exec_query_on_relevant_sources(query: str, relavant_sources: List[str]):
             with BytesIO(result) as buffer:
                 new_df = pd.read_csv(buffer)
             
-            result_df = pd.concat([result_df, new_df], axis=1)
+            result_df = pd.concat([result_df, new_df], axis=0)
                 
     return result_df
